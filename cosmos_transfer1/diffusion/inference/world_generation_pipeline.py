@@ -386,7 +386,7 @@ class DiffusionControl2WorldGenerationPipeline(BaseWorldGenerationPipeline):
         if negative_prompt_embeddings is not None:
             negative_prompt_embeddings = torch.cat(negative_prompt_embeddings)
 
-        samples = self._run_model(
+        samples, intermediates = self._run_model(
             prompt_embeddings=prompt_embeddings,
             negative_prompt_embeddings=negative_prompt_embeddings,
             video_paths=video_paths,
@@ -399,7 +399,7 @@ class DiffusionControl2WorldGenerationPipeline(BaseWorldGenerationPipeline):
         if self.offload_tokenizer:
             self._offload_tokenizer()
 
-        return samples
+        return samples, intermediates
 
     def _run_model(
         self,
@@ -463,6 +463,8 @@ class DiffusionControl2WorldGenerationPipeline(BaseWorldGenerationPipeline):
 
         video = []
         prev_frames = None
+        intermediate_videos = [[] for _ in range(self.num_steps)]
+
         for i_clip in tqdm(range(N_clip)):
             # data_batch_i = {k: v.clone() if isinstance(v, torch.Tensor) else v for k, v in data_batch.items()}
             data_batch_i = {k: v for k, v in data_batch.items()}
@@ -514,7 +516,7 @@ class DiffusionControl2WorldGenerationPipeline(BaseWorldGenerationPipeline):
 
             # Generate video frames for this clip (batched)
             log.info("Starting diffusion sampling")
-            latents = generate_world_from_control(
+            latents, intermediates = generate_world_from_control(
                 model=self.model,
                 state_shape=state_shape,
                 is_negative_prompt=True,
@@ -527,22 +529,36 @@ class DiffusionControl2WorldGenerationPipeline(BaseWorldGenerationPipeline):
                 sigma_max=self.sigma_max if x_sigma_max is not None else None,
                 x_sigma_max=x_sigma_max,
             )
+
             log.info("Completed diffusion sampling")
             log.info("Starting VAE decode")
-            frames = self._run_tokenizer_decoding(latents)  # [B, T, H, W, C] or similar
+            frames = self._run_tokenizer_decoding(latents)
             log.info("Completed VAE decode")
-
+            frames = torch.from_numpy(frames).permute(3, 0, 1, 2)[None]
+            intermediate_frames = []
+            for intermediate in intermediates:
+                temp = self._run_tokenizer_decoding(intermediate)
+                temp = torch.from_numpy(temp).permute(3, 0, 1, 2)[None]
+                intermediate_frames.append(temp)
             if i_clip == 0:
                 video.append(frames)
+                for i in range(self.num_steps):
+                    intermediate_videos[i].append(intermediate_frames[i])
             else:
                 video.append(frames[:, :, self.num_input_frames :])
-
+                for i in range(self.num_steps):
+                    intermediate_videos[i].append(intermediate_frames[i][:, :, self.num_input_frames :])
             prev_frames = torch.zeros_like(frames)
             prev_frames[:, :, : self.num_input_frames] = frames[:, :, -self.num_input_frames :]
 
         video = torch.cat(video, dim=2)[:, :, :T]
         video = video.permute(0, 2, 3, 4, 1).numpy()
-        return video
+
+        for i in range(self.num_steps):
+            intermediate_videos[i] = torch.cat(intermediate_videos[i], dim=2)[:, :, :T]
+            intermediate_videos[i] = intermediate_videos[i][0].permute(1, 2, 3, 0).numpy()
+
+        return video, intermediate_videos
 
     def generate(
         self,
@@ -589,6 +605,7 @@ class DiffusionControl2WorldGenerationPipeline(BaseWorldGenerationPipeline):
 
         # Process prompts in batch
         all_videos = []
+        all_intermediate_videos = []
         all_final_prompts = []
 
         # Upsample prompts if enabled
@@ -654,7 +671,7 @@ class DiffusionControl2WorldGenerationPipeline(BaseWorldGenerationPipeline):
 
         all_neg_embeddings = [emb[1] for emb in all_prompt_embeddings]
         all_prompt_embeddings = [emb[0] for emb in all_prompt_embeddings]
-        videos = self._run_model_with_offload(
+        videos, intermediate_videos = self._run_model_with_offload(
             prompt_embeddings=all_prompt_embeddings,
             negative_prompt_embeddings=all_neg_embeddings,
             video_paths=safe_video_paths,
@@ -667,6 +684,7 @@ class DiffusionControl2WorldGenerationPipeline(BaseWorldGenerationPipeline):
             safe_video = self._run_guardrail_on_video_with_offload(video)
             if safe_video is not None:
                 all_videos.append(safe_video)
+                all_intermediate_videos.append(intermediate_videos[i])
                 all_final_prompts.append(safe_prompts[i])
             else:
                 log.critical(f"Generated video {i+1} is not safe")
@@ -674,4 +692,4 @@ class DiffusionControl2WorldGenerationPipeline(BaseWorldGenerationPipeline):
         if not all_videos:
             log.critical("All generated videos failed safety checks")
             return None
-        return all_videos, all_final_prompts
+        return all_videos, all_intermediate_videos, all_final_prompts

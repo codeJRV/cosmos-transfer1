@@ -14,7 +14,7 @@
 # limitations under the License.
 
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional, Tuple, Union
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import torch
 from megatron.core import parallel_state
@@ -182,7 +182,7 @@ class DiffusionV2WModel(DiffusionT2WModel):
         add_input_frames_guidance: bool = False,
         x_sigma_max: Optional[torch.Tensor] = None,
         sigma_max: Optional[float] = None,
-    ) -> Tensor:
+    ) -> Tuple[Tensor, List[Tensor]]:
         """Generates video samples conditioned on input frames.
 
         Args:
@@ -238,12 +238,12 @@ class DiffusionV2WModel(DiffusionT2WModel):
         if self.net.is_context_parallel_enabled:
             x_sigma_max = split_inputs_cp(x=x_sigma_max, seq_dim=2, cp_group=self.net.cp_group)
 
-        samples = self.sampler(x0_fn, x_sigma_max, num_steps=num_steps, sigma_max=sigma_max)
+        samples, intermediates = self.sampler(x0_fn, x_sigma_max, num_steps=num_steps, sigma_max=sigma_max)
 
         if self.net.is_context_parallel_enabled:
             samples = cat_outputs_cp(samples, seq_dim=2, cp_group=self.net.cp_group)
 
-        return samples
+        return samples, intermediates
 
     def get_x0_fn_from_batch_with_condition_latent(
         self,
