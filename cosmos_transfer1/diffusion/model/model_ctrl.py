@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable, Dict, Optional, Tuple, TypeVar, Union
+from typing import Callable, Dict, List, Optional, Tuple, TypeVar, Union
 
 import torch
 from einops import rearrange
@@ -310,7 +310,7 @@ class VideoDiffusionModelWithCtrl(DiffusionV2WModel):
         target_w: int = 160,
         patch_h: int = 88,
         patch_w: int = 160,
-    ) -> Tensor:
+    ) -> Tuple[Tensor, List[Tensor]]:
         """
         Generate samples from the batch. Based on given batch, it will automatically determine whether to generate image or video samples.
         Different from the base model, this function support condition latent as input, it will create a differnt x0_fn if condition latent is given.
@@ -359,12 +359,12 @@ class VideoDiffusionModelWithCtrl(DiffusionV2WModel):
             x_sigma_max = broadcast(x_sigma_max, to_tp=False, to_cp=True)
             x_sigma_max = split_inputs_cp(x=x_sigma_max, seq_dim=2, cp_group=self.net.cp_group)
 
-        samples = self.sampler(x0_fn, x_sigma_max, num_steps=num_steps, sigma_max=sigma_max)
+        samples, intermediates = self.sampler(x0_fn, x_sigma_max, num_steps=num_steps, sigma_max=sigma_max)
 
         if self.net.is_context_parallel_enabled:
             samples = cat_outputs_cp(samples, seq_dim=2, cp_group=self.net.cp_group)
 
-        return samples
+        return samples, intermediates
 
 
 class VideoDiffusionT2VModelWithCtrl(DiffusionT2WModel):
