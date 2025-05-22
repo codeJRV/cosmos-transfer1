@@ -587,7 +587,7 @@ def generate_world_from_control(
     num_input_frames: int,
     sigma_max: float,
     x_sigma_max=None,
-) -> Tuple[np.array, list, list]:
+) -> Tuple[np.array, list, Optional[np.array]]:
     """Generate video using a conditioning video/image input.
 
     Args:
@@ -618,8 +618,7 @@ def generate_world_from_control(
             dim=2,
         ).contiguous()
     num_of_latent_condition = compute_num_latent_frames(model, num_input_frames)
-
-    sample = model.generate_samples_from_batch(
+    sample, intermediates = model.generate_samples_from_batch(
         data_batch,
         guidance=guidance,
         state_shape=[c, t, h, w],
@@ -636,7 +635,7 @@ def generate_world_from_control(
         patch_h=h,
         patch_w=w,
     )
-    return sample
+    return sample, intermediates
 
 
 def read_video_or_image_into_frames_BCTHW(
